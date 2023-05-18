@@ -211,6 +211,7 @@ if is_accelerate_available():
 
     if version.parse(accelerate_version) >= version.parse("0.16"):
         from accelerate import skip_first_batches
+    from accelerate import Accelerator, PartialState
 
 
 if TYPE_CHECKING:
@@ -885,36 +886,21 @@ class Trainer:
         else:
             data_collator = self._get_collator_with_removed_columns(data_collator, description="training")
 
-        if isinstance(train_dataset, torch.utils.data.IterableDataset):
-            if self.args.world_size > 1:
-                train_dataset = IterableDatasetShard(
-                    train_dataset,
-                    batch_size=self._train_batch_size,
-                    drop_last=self.args.dataloader_drop_last,
-                    num_processes=self.args.world_size,
-                    process_index=self.args.process_index,
-                )
-
-            return DataLoader(
-                train_dataset,
-                batch_size=self._train_batch_size,
-                collate_fn=data_collator,
-                num_workers=self.args.dataloader_num_workers,
-                pin_memory=self.args.dataloader_pin_memory,
-            )
-
-        train_sampler = self._get_train_sampler()
-
-        return DataLoader(
+        train_sampler = None
+        worker_init_fn = None
+        if self.args.world_size < 1:
+            train_sampler = self._get_train_sampler()
+            worker_init_fn = seed_worker
+        train_dataloader = DataLoader(
             train_dataset,
-            batch_size=self._train_batch_size,
             sampler=train_sampler,
+            batch_size=self._train_batch_size,
             collate_fn=data_collator,
-            drop_last=self.args.dataloader_drop_last,
             num_workers=self.args.dataloader_num_workers,
             pin_memory=self.args.dataloader_pin_memory,
-            worker_init_fn=seed_worker,
+            worker_init_fn=worker_init_fn,
         )
+        return self.accelerator.prepare(train_dataloader)
 
     def _get_eval_sampler(self, eval_dataset: Dataset) -> Optional[torch.utils.data.Sampler]:
         # Deprecated code
@@ -966,34 +952,25 @@ class Trainer:
         else:
             data_collator = self._get_collator_with_removed_columns(data_collator, description="evaluation")
 
-        if isinstance(eval_dataset, torch.utils.data.IterableDataset):
-            if self.args.world_size > 1:
-                eval_dataset = IterableDatasetShard(
-                    eval_dataset,
-                    batch_size=self.args.per_device_eval_batch_size,
-                    drop_last=self.args.dataloader_drop_last,
-                    num_processes=self.args.world_size,
-                    process_index=self.args.process_index,
-                )
-            return DataLoader(
-                eval_dataset,
-                batch_size=self.args.eval_batch_size,
-                collate_fn=data_collator,
-                num_workers=self.args.dataloader_num_workers,
-                pin_memory=self.args.dataloader_pin_memory,
-            )
+        eval_sampler = None
+        worker_init_fn = None
+        drop_last = self.args.dataloader_drop_last
+        if self.args.world_size < 1:
+            eval_sampler = self._get_eval_sampler()
+            worker_init_fn = seed_worker
+            drop_last = None
 
-        eval_sampler = self._get_eval_sampler(eval_dataset)
-
-        return DataLoader(
+        eval_dataloader = DataLoader(
             eval_dataset,
             sampler=eval_sampler,
-            batch_size=self.args.eval_batch_size,
+            batch_size=self.args.per_device_eval_batch_size,
             collate_fn=data_collator,
-            drop_last=self.args.dataloader_drop_last,
             num_workers=self.args.dataloader_num_workers,
             pin_memory=self.args.dataloader_pin_memory,
+            worker_init_fn=worker_init_fn,
+            drop_last=drop_last,
         )
+        return self.accelerator.prepare(eval_dataloader)
 
     def get_test_dataloader(self, test_dataset: Dataset) -> DataLoader:
         """
@@ -1013,35 +990,22 @@ class Trainer:
         else:
             data_collator = self._get_collator_with_removed_columns(data_collator, description="test")
 
-        if isinstance(test_dataset, torch.utils.data.IterableDataset):
-            if self.args.world_size > 1:
-                test_dataset = IterableDatasetShard(
-                    test_dataset,
-                    batch_size=self.args.eval_batch_size,
-                    drop_last=self.args.dataloader_drop_last,
-                    num_processes=self.args.world_size,
-                    process_index=self.args.process_index,
-                )
-            return DataLoader(
-                test_dataset,
-                batch_size=self.args.eval_batch_size,
-                collate_fn=data_collator,
-                num_workers=self.args.dataloader_num_workers,
-                pin_memory=self.args.dataloader_pin_memory,
-            )
+        test_sampler = None
+        drop_last = self.args.dataloader_drop_last
+        if self.args.world_size < 1:
+            test_sampler = self._get_eval_sampler()
+            drop_last = None
 
-        test_sampler = self._get_eval_sampler(test_dataset)
-
-        # We use the same batch_size as for eval.
-        return DataLoader(
+        eval_dataloader = DataLoader(
             test_dataset,
             sampler=test_sampler,
             batch_size=self.args.eval_batch_size,
             collate_fn=data_collator,
-            drop_last=self.args.dataloader_drop_last,
+            drop_last=drop_last,
             num_workers=self.args.dataloader_num_workers,
             pin_memory=self.args.dataloader_pin_memory,
         )
+        return self.accelerator.prepare(eval_dataloader)
 
     def create_optimizer_and_scheduler(self, num_training_steps: int):
         """
@@ -3916,3 +3880,11 @@ class Trainer:
         if not self.repo.is_repo_clean():
             self.repo.git_commit("Add *.sagemaker patterns to .gitignore.")
             self.repo.git_push()
+
+    @property
+    def distributed_state(self) -> "PartialState":
+        return self.args.distributed_state
+
+    @property
+    def accelerator(self) -> "Accelerator":
+        return self.args.accelerator

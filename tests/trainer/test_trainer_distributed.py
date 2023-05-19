@@ -108,10 +108,14 @@ if __name__ == "__main__":
     # in the right order. (this is crucial for prediction for instance)
     for dataset_length in [101, 40, 7]:
         dataset = DummyDataset(dataset_length)
+        if training_args.local_rank == 0:
+            print(f'Dataset Length: {dataset_length}')
 
         def compute_metrics(p: EvalPrediction) -> Dict:
             sequential = list(range(len(dataset)))
             success = p.predictions.tolist() == sequential and p.label_ids.tolist() == sequential
+            print(f'Predictions: {p.predictions}, {len(p.predictions)}')
+            print(f'sequential: {sequential}, {len(sequential)}')
             if not success and training_args.local_rank == 0:
                 logger.warning(
                     "Predictions and/or labels do not match expected results:\n  - predictions: "

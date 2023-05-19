@@ -798,9 +798,9 @@ class TrainerIntegrationTest(TestCasePlus, TrainerIntegrationCommon):
     def test_train_and_eval_dataloaders(self):
         n_gpu = max(1, torch.cuda.device_count())
         trainer = get_regression_trainer(learning_rate=0.1, per_device_train_batch_size=16)
-        self.assertEqual(trainer.get_train_dataloader().batch_size, 16 * n_gpu)
+        self.assertEqual(trainer.get_train_dataloader().total_batch_size, 16 * n_gpu)
         trainer = get_regression_trainer(learning_rate=0.1, per_device_eval_batch_size=16)
-        self.assertEqual(trainer.get_eval_dataloader().batch_size, 16 * n_gpu)
+        self.assertEqual(trainer.get_eval_dataloader().total_batch_size, 16 * n_gpu)
 
         # Check drop_last works
         trainer = get_regression_trainer(
